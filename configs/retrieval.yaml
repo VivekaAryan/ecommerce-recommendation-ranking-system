@@ -1,0 +1,31 @@
+model:
+  embedding_dim: 128
+  user_hidden_dim: 256
+  item_hidden_dim: 256
+  history_length: 50
+  encoder: gru
+  dropout: 0.1
+
+training:
+  batch_size: 512
+  learning_rate: 0.001
+  epochs: 10
+  num_negatives: 256
+  logq_correction: true
+  temperature: 0.05
+
+ann:
+  index_type: hnsw
+  nlist: 100
+  nprobe: 10
+  ef_search: 64
+  ef_construction: 200
+  top_k: 500
+
+cold_start:
+  fallback_top_k: 100
+  content_weight: 0.7
+
+embedding_versioning:
+  num_anchors: 1000
+  alignment_method: procrustes

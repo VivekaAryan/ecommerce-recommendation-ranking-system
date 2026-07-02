@@ -214,5 +214,18 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# ML / experiment artifacts
+.venv/
+data/
+mlruns/
+mlartifacts/
+models/
+frontend/node_modules/
+frontend/dist/
+*.parquet
+*.faiss
+*.pkl
+*.joblib
+
 # Streamlit
 .streamlit/secrets.toml

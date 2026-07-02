@@ -1,0 +1,25 @@
+staleness:
+  user_behavior_refresh_hours: 6
+  item_popularity_refresh_hours: 24
+
+user_features:
+  - interaction_count_7d
+  - interaction_count_30d
+  - days_since_last_interaction
+  - top_category_affinity
+  - avg_price_interacted
+
+item_features:
+  - popularity_decay_7d
+  - popularity_decay_30d
+  - price_bucket
+  - category_id
+  - content_embedding
+
+cold_start:
+  default_interaction_count: 0
+  default_days_since_last: 365
+  default_price_bucket: 2
+
+sequence:
+  max_history_length: 50

@@ -1,0 +1,19 @@
+seed: 42
+data_dir: data
+category: Electronics
+target_interactions: 750000
+
+splits:
+  train_end: "2018-06-30"
+  val_end: "2018-12-31"
+
+paths:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  features_dir: data/features
+  simulator_logs_dir: data/simulator_logs
+  models_dir: models
+
+mlflow:
+  tracking_uri: mlruns
+  experiment_name: recsys-platform
