@@ -1,7 +1,31 @@
 seed: 42
 data_dir: data
 category: Electronics
-target_interactions: 750000
+target_interactions: 175000
+require_item_images: true
+
+categories:
+  - name: Appliances
+    config_suffix: Appliances
+    target_interactions: 25000
+  - name: Books
+    config_suffix: Books
+    target_interactions: 25000
+  - name: Cell Phones and Accessories
+    config_suffix: Cell_Phones_and_Accessories
+    target_interactions: 25000
+  - name: Electronics
+    config_suffix: Electronics
+    target_interactions: 25000
+  - name: CDs and Vinyl
+    config_suffix: CDs_and_Vinyl
+    target_interactions: 25000
+  - name: Musical Instruments
+    config_suffix: Musical_Instruments
+    target_interactions: 25000
+  - name: Toys and Games
+    config_suffix: Toys_and_Games
+    target_interactions: 25000
 
 splits:
   train_end: "2018-06-30"
@@ -15,5 +39,5 @@ paths:
   models_dir: models
 
 mlflow:
-  tracking_uri: mlruns
+  tracking_uri: sqlite:///data/mlflow.db
   experiment_name: recsys-platform

@@ -21,6 +21,6 @@ Subsample Amazon Reviews 2023 Electronics to ~500K–1M interactions for local d
 ## Scale-up Path
 
 1. Increase `target_interactions` in `configs/base.yaml`
-2. Run `scripts/download_data.py` without `--synthetic`
+2. Run `python scripts/download_data.py`
 3. Re-tune ANN index (IVF nlist/nprobe) for larger catalog
 4. Consider distributed training for sequential ranker

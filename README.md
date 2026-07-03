@@ -19,29 +19,29 @@ A multi-stage ecommerce recommendation system built to mirror production persona
 # Install
 pip install -e ".[dev]"
 
-# Prepare synthetic data (local dev)
-python scripts/download_data.py --synthetic --size 10000
+# Download Amazon Reviews 2023 (7 categories, ~30-60 min)
+python scripts/download_data.py
 
 # Build features
-python scripts/build_features.py --synthetic
+python scripts/build_features.py
 
 # Measure train/serve feature skew
 python scripts/measure_skew.py
 
 # Train retrieval
-python scripts/train_retrieval.py --synthetic
+python scripts/train_retrieval.py
 
 # Train ranker
-python scripts/train_ranker.py --synthetic
+python scripts/train_ranker.py
 
 # Run simulator
-python scripts/run_simulator.py --synthetic
+python scripts/run_simulator.py
 
 # Evaluate (offline + OPE)
-python scripts/evaluate.py --synthetic
+python scripts/evaluate.py
 
-# MLflow UI
-mlflow ui --backend-store-uri mlruns
+# MLflow UI (after training)
+mlflow ui --backend-store-uri sqlite:///data/mlflow.db
 ```
 
 ## Testing Dashboard
@@ -75,6 +75,22 @@ python scripts/run_ui.py
 
 Open http://localhost:8000
 
+### macOS: Python quit unexpectedly
+
+On Apple Silicon, PyTorch and FAISS can conflict over OpenMP and crash Python when you click **Get Recommendations**. The dashboard sets `KMP_DUPLICATE_LIB_OK=TRUE` automatically when started via `scripts/run_ui.py`. If you still see crashes, run:
+
+```bash
+export KMP_DUPLICATE_LIB_OK=TRUE
+export OMP_NUM_THREADS=1
+python scripts/run_ui.py --reload
+```
+
+LightGBM ranker training also needs Homebrew OpenMP on macOS:
+
+```bash
+brew install libomp
+```
+
 ### Dashboard Features
 
 - **Overview** — artifact status, dataset stats, one-click full pipeline
@@ -104,7 +120,18 @@ Open http://localhost:8000
 
 ## Dataset
 
-Amazon Reviews 2023 (Electronics), subsampled to ~500K–1M interactions for local iteration. Use `--synthetic` for fast local development without downloading the full dataset.
+Amazon Reviews 2023 across **7 storefront categories** (Appliances, Books, Cell Phones and Accessories, Electronics, CDs and Vinyl, Musical Instruments, Toys and Games). The download samples **~175K interactions** (25K per category), keeps only products with **real Amazon `image_url` metadata**, and persists co-purchase / co-view links for retrieval boosting.
+
+Expected disk usage after download + features + models: **~1–2 GB**. Download time is typically **30–60 minutes** depending on network speed.
+
+```bash
+python scripts/download_data.py
+python scripts/build_features.py
+python scripts/train_retrieval.py
+python scripts/train_ranker.py
+```
+
+If download fails, the command exits with an error (no silent fallback). Ensure network access and optionally set `HF_TOKEN` for higher HuggingFace rate limits.
 
 ## Documentation
 

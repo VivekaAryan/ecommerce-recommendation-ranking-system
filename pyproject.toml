@@ -53,7 +53,7 @@ recsys-ui = "recsys.api.server:main"
 sources = ["src"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["recsys"]
+packages = ["src/recsys"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

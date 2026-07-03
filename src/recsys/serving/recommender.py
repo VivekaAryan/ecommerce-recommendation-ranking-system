@@ -4,12 +4,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from recsys.env import configure_runtime_env
+
+configure_runtime_env()
+
 import numpy as np
 import pandas as pd
 import torch
 
 from recsys.config import get_base_config, load_yaml
+from recsys.data.item_links import load_item_links, neighbors_for_item
 from recsys.data.splits import load_splits
+from recsys.catalog import item_image_url, item_to_card
+from recsys.features.embeddings import mean_embedding_for_items
+from recsys.features.item_features import build_item_feature_matrix
 from recsys.ranking.prerank import prerank_candidates
 from recsys.reranking.calibration import ScoreCalibrator
 from recsys.reranking.diversity import maximal_marginal_relevance
@@ -26,6 +34,7 @@ class RecommendationResult:
     latency: StageLatency
     within_budget: dict[str, bool]
     user_history: list[str] = field(default_factory=list)
+    context_item_id: str | None = None
 
 
 class _Retriever:
@@ -49,7 +58,7 @@ class _Ranker:
         self._service = service
 
     def rank(self, candidates: list[str], context: dict) -> list[str]:
-        return self._service._rank(candidates)
+        return self._service._rank(candidates, context.get("user_id"))
 
 
 class _Reranker:
@@ -79,8 +88,10 @@ class RecommendationService:
         self.lgbm: object | None = None
         self.calibrator: ScoreCalibrator | None = None
         self.item_embeddings: dict[str, np.ndarray] = {}
+        self.item_links: pd.DataFrame | None = None
         self._last_scores: dict[str, float] = {}
         self.pipeline: ServingPipeline | None = None
+        self._context_item_id: str | None = None
 
     def load(self, force: bool = False) -> None:
         if self._loaded and not force:
@@ -91,6 +102,7 @@ class RecommendationService:
             raise FileNotFoundError("Dataset not prepared. Run the data pipeline first.")
 
         self.interactions, self.items, _, _, _ = load_splits(processed)
+        self.item_links = load_item_links(processed)
         if (features_dir / "item_features_batch.parquet").exists():
             self.item_features = pd.read_parquet(features_dir / "item_features_batch.parquet")
         else:
@@ -115,12 +127,7 @@ class RecommendationService:
         self._loaded = True
 
     def _build_item_features_np(self) -> None:
-        features = []
-        for row in self.items.itertuples():
-            price = 0.0 if pd.isna(row.price) else float(row.price)
-            cat_code = hash(str(row.category)) % 1000 / 1000.0
-            features.append([price / 500.0, cat_code, 0.0, 0.0] + [0.0] * 12)
-        self.item_features_np = np.array(features, dtype=np.float32)
+        self.item_features_np = build_item_feature_matrix(self.items, self.item_features)
 
     def _load_retrieval(self) -> None:
         model_dir = self.cfg.resolve_path(self.cfg.paths.models_dir) / "retrieval"
@@ -181,6 +188,8 @@ class RecommendationService:
         history_length = self.retrieval_cfg["model"]["history_length"]
         top_k = self.retrieval_cfg["ann"]["top_k"]
         hist_ids = self.user_history.get(user_id, [])[-history_length:]
+        if self._context_item_id and self._context_item_id in self.item_id_to_idx:
+            hist_ids = (hist_ids + [self._context_item_id])[-history_length:]
 
         if hist_ids and self.retrieval_model and self.ann_index:
             hist_idx = [self.item_id_to_idx[i] for i in hist_ids if i in self.item_id_to_idx]
@@ -191,10 +200,19 @@ class RecommendationService:
                 with torch.no_grad():
                     user_emb = self.retrieval_model.encode_users(hist_tensor).cpu().numpy()
                 results, scores = self.ann_index.search(user_emb, top_k=top_k)
+                candidate_ids = list(results[0])
                 self._last_scores = {
-                    item_id: float(scores[0][i]) for i, item_id in enumerate(results[0])
+                    item_id: float(scores[0][i]) for i, item_id in enumerate(candidate_ids)
                 }
-                return results[0]
+
+                if self._context_item_id and self.item_links is not None:
+                    linked = neighbors_for_item(self.item_links, self._context_item_id, limit=10)
+                    max_score = max(self._last_scores.values(), default=0.5)
+                    for neighbor in linked:
+                        if neighbor not in candidate_ids:
+                            candidate_ids.insert(0, neighbor)
+                            self._last_scores[neighbor] = max_score + 0.05
+                return candidate_ids
 
         fallback = self.items["item_id"].head(top_k).tolist()
         self._last_scores = {item_id: 0.1 for item_id in fallback}
@@ -207,13 +225,19 @@ class RecommendationService:
             top_k=self.ranking_cfg["prerank"]["top_k"],
         )
 
-    def _rank(self, candidates: list[str]) -> list[str]:
+    def _rank(self, candidates: list[str], user_id: str | None = None) -> list[str]:
         from recsys.ranking.lgbm_ranker import build_ranking_features
 
         retrieval_scores = {c: self._last_scores.get(c, 0.0) for c in candidates}
         deep_scores = {c: retrieval_scores[c] * 0.8 for c in candidates}
+        history_ids = self.user_history.get(user_id or "", [])[-10:]
+        user_emb = mean_embedding_for_items(history_ids, self.items, embedding_df=self.item_features)
         features, valid_ids = build_ranking_features(
-            candidates, retrieval_scores, deep_scores, self.item_features
+            candidates,
+            retrieval_scores,
+            deep_scores,
+            self.item_features,
+            user_content_embedding=user_emb,
         )
         if len(valid_ids) == 0:
             return candidates
@@ -234,28 +258,37 @@ class RecommendationService:
 
     def _rerank(self, candidates: list[str], slate_size: int) -> list[str]:
         lambda_param = self.sim_cfg["reranking"]["mmr_lambda"]
+        exclude = {self._context_item_id} if self._context_item_id else set()
+        filtered = [c for c in candidates if c not in exclude]
         return maximal_marginal_relevance(
-            candidates[:20],
+            filtered[:20],
             self._last_scores,
             self.item_embeddings,
             top_k=slate_size,
             lambda_param=lambda_param,
         )
 
-    def recommend(self, user_id: str, slate_size: int = 10) -> RecommendationResult:
+    def recommend(
+        self,
+        user_id: str,
+        slate_size: int = 10,
+        context_item_id: str | None = None,
+    ) -> RecommendationResult:
+        self._context_item_id = context_item_id
         self.load()
-        slate_ids, latency = self.pipeline.recommend(user_id, {"slate_size": slate_size})
+        slate_ids, latency = self.pipeline.recommend(
+            user_id,
+            {"slate_size": slate_size, "user_id": user_id},
+        )
+        self._context_item_id = None
         items_lookup = self.items.set_index("item_id")
         slate = []
         for position, item_id in enumerate(slate_ids):
             if item_id in items_lookup.index:
-                row = items_lookup.loc[item_id]
+                card = item_to_card(items_lookup.loc[item_id], item_id=item_id)
                 slate.append(
                     {
-                        "item_id": item_id,
-                        "title": str(row.get("title", item_id)),
-                        "category": str(row.get("category", "Unknown")),
-                        "price": None if pd.isna(row.get("price")) else float(row.get("price")),
+                        **card,
                         "score": round(self._last_scores.get(item_id, 0.0), 4),
                         "position": position,
                     }
@@ -269,6 +302,7 @@ class RecommendationService:
                         "price": None,
                         "score": round(self._last_scores.get(item_id, 0.0), 4),
                         "position": position,
+                        "image_url": item_image_url(item_id, "Unknown"),
                     }
                 )
         return RecommendationResult(
@@ -277,14 +311,13 @@ class RecommendationService:
             latency=latency,
             within_budget=self.pipeline.within_budget(latency),
             user_history=self.user_history.get(user_id, [])[-10:],
+            context_item_id=context_item_id,
         )
 
     def list_users(self, limit: int = 50) -> list[dict]:
-        self.load()
-        counts = self.interactions["user_id"].value_counts().head(limit)
-        return [
-            {"user_id": uid, "interaction_count": int(count)} for uid, count in counts.items()
-        ]
+        from recsys.api.services import list_users_from_dataset
+
+        return list_users_from_dataset(limit=limit)
 
     def invalidate(self) -> None:
         self._loaded = False

@@ -4,17 +4,29 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
 import mlflow
 
-from recsys.config import get_base_config
+from recsys.config import PROJECT_ROOT, get_base_config
+
+
+def _resolve_tracking_uri(uri: str) -> str:
+    """Resolve sqlite tracking URIs relative to the project root."""
+    if uri.startswith("sqlite:///"):
+        db_path = uri[len("sqlite:///") :]
+        if not Path(db_path).is_absolute():
+            db_path = str((PROJECT_ROOT / db_path).resolve())
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        return f"sqlite:///{db_path}"
+    return uri
 
 
 class ExperimentTracker:
     def __init__(self, experiment_name: str | None = None, tracking_uri: str | None = None) -> None:
         cfg = get_base_config()
-        mlflow.set_tracking_uri(tracking_uri or cfg.mlflow.tracking_uri)
+        mlflow.set_tracking_uri(_resolve_tracking_uri(tracking_uri or cfg.mlflow.tracking_uri))
         mlflow.set_experiment(experiment_name or cfg.mlflow.experiment_name)
         self._active_run = None
 

@@ -4,24 +4,39 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from recsys.env import configure_runtime_env
+
+configure_runtime_env()
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from recsys.api.jobs import JobManager
 from recsys.api.schemas import (
+    CatalogResponse,
     JobDetail,
     JobRequest,
     JobResponse,
     LatencyBreakdown,
     MetricsResponse,
+    ProductCard,
     RecommendRequest,
     RecommendResponse,
     SlateItem,
     SystemStatus,
+    UserHistoryResponse,
     UserInfo,
 )
-from recsys.api.services import TASK_HANDLERS, get_metrics, get_simulator_logs, get_system_status
+from recsys.api.services import (
+    TASK_HANDLERS,
+    get_catalog,
+    get_metrics,
+    get_simulator_logs,
+    get_system_status,
+    get_user_history_products,
+    list_users_from_dataset,
+)
 
 FRONTEND_DIST = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 
@@ -54,12 +69,34 @@ def status() -> SystemStatus:
 
 @app.get("/api/users", response_model=list[UserInfo])
 def list_users(limit: int = 50) -> list[UserInfo]:
-    from recsys.serving.recommender import get_recommendation_service
-
     try:
-        service = get_recommendation_service()
-        users = service.list_users(limit=limit)
+        users = list_users_from_dataset(limit=limit)
         return [UserInfo(**u) for u in users]
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/catalog", response_model=CatalogResponse)
+def catalog(limit: int = 48, offset: int = 0, category: str | None = None) -> CatalogResponse:
+    try:
+        data = get_catalog(limit=limit, offset=offset, category=category)
+        return CatalogResponse(
+            products=[ProductCard(**p) for p in data["products"]],
+            categories=data["categories"],
+            total=data["total"],
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/users/{user_id}/history", response_model=UserHistoryResponse)
+def user_history(user_id: str, limit: int = 12) -> UserHistoryResponse:
+    try:
+        data = get_user_history_products(user_id, limit=limit)
+        return UserHistoryResponse(
+            user_id=data["user_id"],
+            products=[ProductCard(**p) for p in data["products"]],
+        )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -70,7 +107,11 @@ def recommend(request: RecommendRequest) -> RecommendResponse:
 
     try:
         service = get_recommendation_service()
-        result = service.recommend(request.user_id, slate_size=request.slate_size)
+        result = service.recommend(
+            request.user_id,
+            slate_size=request.slate_size,
+            context_item_id=request.context_item_id,
+        )
         return RecommendResponse(
             user_id=result.user_id,
             slate=[SlateItem(**item) for item in result.slate],
@@ -83,6 +124,7 @@ def recommend(request: RecommendRequest) -> RecommendResponse:
                 within_budget=result.within_budget,
             ),
             user_history=result.user_history,
+            context_item_id=result.context_item_id,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import argparse
 
+from recsys.env import configure_runtime_env
+
+configure_runtime_env()
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the recsys testing dashboard")

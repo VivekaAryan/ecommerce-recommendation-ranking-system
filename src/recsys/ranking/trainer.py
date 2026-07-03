@@ -13,10 +13,13 @@ from torch.utils.data import DataLoader, Dataset
 
 from recsys.config import get_base_config, load_yaml
 from recsys.experiments.tracker import ExperimentTracker
+from recsys.features.embeddings import mean_embedding_for_items
 from recsys.ranking.lgbm_ranker import LightGBMRanker, build_ranking_features
 from recsys.ranking.multitask import MultiTaskRanker, MultiTaskWeights
 from recsys.ranking.sequential import SequentialRanker
 from recsys.utils import ensure_dir, get_device, set_seed
+
+SIDE_FEATURE_DIM = 6
 
 
 class RankingDataset(Dataset):
@@ -30,7 +33,7 @@ class RankingDataset(Dataset):
                 continue
             hist = [item_id_to_idx[i] for i in history[row.user_id][-seq_len:] if i in item_id_to_idx]
             if hist:
-                label_click = 1.0
+                label_click = 2.0 if getattr(row, "verified_purchase", False) else 1.0
                 label_value = 0.0 if pd.isna(getattr(row, "price", np.nan)) else float(getattr(row, "price", 0.0))
                 self.samples.append((hist, item_id_to_idx[row.item_id], label_click, label_value))
             history[row.user_id].append(row.item_id)
@@ -62,9 +65,10 @@ def train_ranking_models(
     item_id_to_idx = {item_id: i + 1 for i, item_id in enumerate(item_ids)}
     num_items = len(item_id_to_idx) + 1
 
+    hidden_dim = cfg["sequential"]["hidden_dim"]
     seq_model = SequentialRanker(
         num_items=num_items,
-        hidden_dim=cfg["sequential"]["hidden_dim"],
+        hidden_dim=hidden_dim,
         num_layers=cfg["sequential"]["num_layers"],
         num_heads=cfg["sequential"]["num_heads"],
         max_seq_length=cfg["sequential"]["max_seq_length"],
@@ -72,8 +76,8 @@ def train_ranking_models(
     ).to(device)
 
     multitask = MultiTaskRanker(
-        input_dim=cfg["sequential"]["hidden_dim"] + 6,
-        hidden_dim=cfg["sequential"]["hidden_dim"],
+        input_dim=hidden_dim * 2 + SIDE_FEATURE_DIM,
+        hidden_dim=hidden_dim,
     ).to(device)
 
     train_ds = RankingDataset(train_df, item_id_to_idx, cfg["sequential"]["max_seq_length"])
@@ -98,7 +102,7 @@ def train_ranking_models(
                 user_repr = seq_model(seq)
                 candidate_emb = seq_model.item_embedding(pos_item)
                 deep_feat = torch.cat([user_repr, candidate_emb], dim=-1)
-                side = torch.zeros(deep_feat.size(0), 6, device=device)
+                side = torch.zeros(deep_feat.size(0), SIDE_FEATURE_DIM, device=device)
                 outputs = multitask(torch.cat([deep_feat, side], dim=-1))
                 loss = (
                     F.binary_cross_entropy(outputs["click"], click)
@@ -120,7 +124,15 @@ def train_ranking_models(
         candidates = user_df["item_id"].tolist()[: cfg["prerank"]["top_k"]]
         retrieval_scores = {c: 1.0 for c in candidates}
         deep_scores = {c: 0.5 for c in candidates}
-        feat, valid_ids = build_ranking_features(candidates, retrieval_scores, deep_scores, item_features)
+        history_ids = user_df.sort_values("timestamp")["item_id"].tolist()[:-1]
+        user_emb = mean_embedding_for_items(history_ids, items_df, embedding_df=item_features)
+        feat, valid_ids = build_ranking_features(
+            candidates,
+            retrieval_scores,
+            deep_scores,
+            item_features,
+            user_content_embedding=user_emb,
+        )
         if len(valid_ids) == 0:
             continue
         features.append(feat)

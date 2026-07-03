@@ -32,15 +32,23 @@ class PathsConfig(BaseModel):
 
 
 class MLflowConfig(BaseModel):
-    tracking_uri: str = "mlruns"
+    tracking_uri: str = "sqlite:///data/mlflow.db"
     experiment_name: str = "recsys-platform"
+
+
+class CategoryConfig(BaseModel):
+    name: str
+    config_suffix: str
+    target_interactions: int | None = None
 
 
 class BaseConfig(BaseModel):
     seed: int = 42
     data_dir: str = "data"
     category: str = "Electronics"
-    target_interactions: int = 750_000
+    target_interactions: int = 175_000
+    require_item_images: bool = True
+    categories: list[CategoryConfig] = Field(default_factory=list)
     splits: SplitConfig
     paths: PathsConfig = Field(default_factory=PathsConfig)
     mlflow: MLflowConfig = Field(default_factory=MLflowConfig)

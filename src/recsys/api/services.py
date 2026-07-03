@@ -8,6 +8,7 @@ from typing import Any
 
 import pandas as pd
 
+from recsys.catalog import item_to_card, items_to_cards
 from recsys.config import get_base_config, load_yaml
 from recsys.data.download import prepare_dataset
 from recsys.data.splits import load_splits
@@ -15,9 +16,14 @@ from recsys.evaluation.interference import cluster_randomized_test, naive_ab_tes
 from recsys.evaluation.ope import compare_ope_estimators
 from recsys.features.batch import load_processed_data, save_batch_features
 from recsys.features.online import OnlineFeaturePipeline, measure_feature_skew
-from recsys.serving.recommender import get_recommendation_service
 from recsys.simulator.runner import build_default_runner
 from recsys.utils import ensure_dir
+
+
+def _invalidate_recommender() -> None:
+    from recsys.serving.recommender import get_recommendation_service
+
+    get_recommendation_service().invalidate()
 
 
 def _artifact(path: Path, name: str, detail: str = "") -> dict[str, Any]:
@@ -57,44 +63,103 @@ def get_system_status() -> dict[str, Any]:
     return {"ready": ready, "artifacts": artifacts, "dataset": dataset}
 
 
-def run_download(synthetic: bool, synthetic_size: int) -> dict[str, Any]:
-    paths = prepare_dataset(use_synthetic=synthetic, synthetic_size=synthetic_size)
-    get_recommendation_service().invalidate()
+def list_users_from_dataset(limit: int = 50) -> list[dict[str, Any]]:
+    """List users from interactions parquet without loading ML models."""
+    cfg = get_base_config()
+    path = cfg.resolve_path(cfg.paths.processed_dir) / "interactions.parquet"
+    if not path.exists():
+        raise FileNotFoundError("Dataset not prepared. Run the data pipeline first.")
+    interactions = pd.read_parquet(path)
+    counts = interactions["user_id"].value_counts().head(limit)
+    return [
+        {"user_id": str(uid), "interaction_count": int(count)} for uid, count in counts.items()
+    ]
+
+
+def _load_items_df() -> pd.DataFrame:
+    cfg = get_base_config()
+    path = cfg.resolve_path(cfg.paths.processed_dir) / "items.parquet"
+    if not path.exists():
+        raise FileNotFoundError("Dataset not prepared. Run the data pipeline first.")
+    items = pd.read_parquet(path)
+    if "image_url" in items.columns:
+        items = items[items["image_url"].notna() & (items["image_url"].astype(str).str.strip() != "")]
+    return items
+
+
+def _category_column(items: pd.DataFrame) -> str:
+    return "main_category" if "main_category" in items.columns else "category"
+
+
+def get_catalog(
+    limit: int = 48,
+    offset: int = 0,
+    category: str | None = None,
+) -> dict[str, Any]:
+    items = _load_items_df()
+    category_col = _category_column(items)
+    if category:
+        items = items[items[category_col] == category]
+    total = len(items)
+    page = items.iloc[offset : offset + limit]
+    all_items = _load_items_df()
+    categories = sorted(all_items[category_col].dropna().unique().tolist())
+    return {
+        "products": items_to_cards(page),
+        "categories": categories,
+        "total": total,
+    }
+
+
+def get_user_history_products(user_id: str, limit: int = 12) -> dict[str, Any]:
+    cfg = get_base_config()
+    interactions_path = cfg.resolve_path(cfg.paths.processed_dir) / "interactions.parquet"
+    if not interactions_path.exists():
+        raise FileNotFoundError("Dataset not prepared. Run the data pipeline first.")
+    interactions = pd.read_parquet(interactions_path)
+    user_rows = interactions[interactions["user_id"] == user_id].sort_values("timestamp")
+    item_ids = user_rows["item_id"].drop_duplicates().tolist()[-limit:]
+    items = _load_items_df()
+    products = []
+    for item_id in reversed(item_ids):
+        row = items[items["item_id"] == item_id]
+        if not row.empty:
+            products.append(item_to_card(row.iloc[0]))
+    return {"user_id": user_id, "products": products}
+
+
+def run_download() -> dict[str, Any]:
+    paths = prepare_dataset()
+    _invalidate_recommender()
     return {
         "message": "Dataset prepared",
         "paths": {k: str(v) for k, v in paths.items()},
     }
 
 
-def run_build_features(synthetic: bool) -> dict[str, Any]:
-    if synthetic:
-        prepare_dataset(use_synthetic=True)
+def run_build_features() -> dict[str, Any]:
     interactions, items = load_processed_data()
     cfg = get_base_config()
     paths = save_batch_features(interactions, items, cfg.resolve_path(cfg.paths.features_dir))
-    get_recommendation_service().invalidate()
+    _invalidate_recommender()
     return {"message": "Features built", "paths": {k: str(v) for k, v in paths.items()}}
 
 
-def run_train_retrieval(synthetic: bool) -> dict[str, Any]:
+def run_train_retrieval() -> dict[str, Any]:
     from recsys.retrieval.trainer import train_retrieval_model
 
-    if synthetic:
-        prepare_dataset(use_synthetic=True)
     cfg = get_base_config()
     processed = cfg.resolve_path(cfg.paths.processed_dir)
     _, items, train, val, _ = load_splits(processed)
     output = cfg.resolve_path(cfg.paths.models_dir) / "retrieval"
     train_retrieval_model(train, val, items, output)
-    get_recommendation_service().invalidate()
+    _invalidate_recommender()
     return {"message": "Retrieval model trained", "output": str(output)}
 
 
-def run_train_ranker(synthetic: bool) -> dict[str, Any]:
+def run_train_ranker() -> dict[str, Any]:
     from recsys.ranking.trainer import train_ranking_models
 
-    if synthetic:
-        prepare_dataset(use_synthetic=True)
     cfg = get_base_config()
     processed = cfg.resolve_path(cfg.paths.processed_dir)
     features_dir = cfg.resolve_path(cfg.paths.features_dir)
@@ -102,17 +167,14 @@ def run_train_ranker(synthetic: bool) -> dict[str, Any]:
     item_features = pd.read_parquet(features_dir / "item_features_batch.parquet")
     output = cfg.resolve_path(cfg.paths.models_dir) / "ranking"
     train_ranking_models(train, val, items, item_features, output)
-    get_recommendation_service().invalidate()
+    _invalidate_recommender()
     return {"message": "Ranking models trained", "output": str(output)}
 
 
 def run_simulator(
-    synthetic: bool,
     num_days: int | None = None,
     sessions_per_day: int | None = None,
 ) -> dict[str, Any]:
-    if synthetic:
-        prepare_dataset(use_synthetic=True)
     cfg = get_base_config()
     sim_cfg = load_yaml("simulator.yaml")
     processed = cfg.resolve_path(cfg.paths.processed_dir)
@@ -139,13 +201,11 @@ def run_simulator(
     }
 
 
-def run_evaluate(synthetic: bool) -> dict[str, Any]:
-    if synthetic:
-        prepare_dataset(use_synthetic=True)
+def run_evaluate() -> dict[str, Any]:
     cfg = get_base_config()
     log_path = cfg.resolve_path(cfg.paths.simulator_logs_dir) / "simulator_logs.parquet"
     if not log_path.exists():
-        run_simulator(synthetic=synthetic)
+        run_simulator()
         log_path = cfg.resolve_path(cfg.paths.simulator_logs_dir) / "simulator_logs.parquet"
 
     logs = pd.read_parquet(log_path)
@@ -231,11 +291,11 @@ def get_simulator_logs(limit: int = 100, offset: int = 0) -> dict[str, Any]:
 
 
 TASK_HANDLERS = {
-    "download": lambda p: run_download(p.synthetic, p.synthetic_size),
-    "features": lambda p: run_build_features(p.synthetic),
-    "train_retrieval": lambda p: run_train_retrieval(p.synthetic),
-    "train_ranker": lambda p: run_train_ranker(p.synthetic),
-    "simulator": lambda p: run_simulator(p.synthetic, p.num_days, p.sessions_per_day),
-    "evaluate": lambda p: run_evaluate(p.synthetic),
+    "download": lambda p: run_download(),
+    "features": lambda p: run_build_features(),
+    "train_retrieval": lambda p: run_train_retrieval(),
+    "train_ranker": lambda p: run_train_ranker(),
+    "simulator": lambda p: run_simulator(p.num_days, p.sessions_per_day),
+    "evaluate": lambda p: run_evaluate(),
     "measure_skew": lambda p: run_measure_skew(),
 }

@@ -422,6 +422,12 @@ th {
   margin-bottom: 16px;
 }
 
+.warn-banner {
+  background: rgba(245, 166, 35, 0.1);
+  border: 1px solid rgba(245, 166, 35, 0.35);
+  color: var(--warning);
+}
+
 .loading {
   color: var(--text-muted);
   font-size: 0.9rem;

@@ -3,10 +3,18 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Allow running before editable install: `python scripts/run_feedback_loop.py`
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
 import pandas as pd
 
 from recsys.config import get_base_config, load_yaml
-from recsys.data.download import prepare_dataset
 from recsys.data.splits import load_splits
 from recsys.evaluation.feedback_loop import measure_feedback_loop
 from recsys.simulator.runner import build_default_runner
@@ -15,8 +23,9 @@ from recsys.utils import ensure_dir
 
 def main() -> None:
     cfg = get_base_config()
-    prepare_dataset(use_synthetic=True, synthetic_size=5_000)
     processed = cfg.resolve_path(cfg.paths.processed_dir)
+    if not (processed / "interactions.parquet").exists():
+        raise FileNotFoundError("Dataset not prepared. Run: python scripts/download_data.py")
     interactions, items, _, _, _ = load_splits(processed)
     sim_cfg = load_yaml("simulator.yaml")
     logs_per_cycle = []

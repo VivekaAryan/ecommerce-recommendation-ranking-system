@@ -3,10 +3,18 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Allow running before editable install: `python scripts/benchmark_ann.py`
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
 import numpy as np
 
 from recsys.config import get_base_config
-from recsys.data.download import prepare_dataset
 from recsys.data.splits import load_splits
 from recsys.experiments.tracker import ExperimentTracker
 from recsys.retrieval.ann_index import benchmark_ann
@@ -15,8 +23,9 @@ from recsys.utils import ensure_dir
 
 def main() -> None:
     cfg = get_base_config()
-    prepare_dataset(use_synthetic=True, synthetic_size=5_000)
     processed = cfg.resolve_path(cfg.paths.processed_dir)
+    if not (processed / "interactions.parquet").exists():
+        raise FileNotFoundError("Dataset not prepared. Run: python scripts/download_data.py")
     interactions, items, train, _, _ = load_splits(processed)
     rng = np.random.default_rng(cfg.seed)
     item_ids = items["item_id"].tolist()

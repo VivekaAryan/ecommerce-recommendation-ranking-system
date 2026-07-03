@@ -1,9 +1,12 @@
 import type {
+  CatalogResponse,
   JobDetail,
   MetricsResponse,
+  ProductCard,
   RecommendResponse,
   SimulatorLogs,
   SystemStatus,
+  UserHistoryResponse,
   UserInfo,
 } from "./types";
 
@@ -25,15 +28,26 @@ export const api = {
   health: () => request<{ status: string }>("/health"),
   status: () => request<SystemStatus>("/status"),
   users: (limit = 50) => request<UserInfo[]>(`/users?limit=${limit}`),
-  recommend: (userId: string, slateSize = 10) =>
+  catalog: (limit = 48, offset = 0, category?: string) => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (category) params.set("category", category);
+    return request<CatalogResponse>(`/catalog?${params}`);
+  },
+  userHistory: (userId: string, limit = 12) =>
+    request<UserHistoryResponse>(`/users/${encodeURIComponent(userId)}/history?limit=${limit}`),
+  recommend: (userId: string, contextItemId: string, slateSize = 8) =>
     request<RecommendResponse>("/recommend", {
       method: "POST",
-      body: JSON.stringify({ user_id: userId, slate_size: slateSize }),
+      body: JSON.stringify({
+        user_id: userId,
+        slate_size: slateSize,
+        context_item_id: contextItemId,
+      }),
     }),
-  runJob: (task: string, synthetic = true, extra: Record<string, unknown> = {}) =>
+  runJob: (task: string, extra: Record<string, unknown> = {}) =>
     request<{ id: string; task: string; status: string }>("/jobs", {
       method: "POST",
-      body: JSON.stringify({ task, synthetic, synthetic_size: 10000, ...extra }),
+      body: JSON.stringify({ task, ...extra }),
     }),
   jobs: () => request<JobDetail[]>("/jobs"),
   job: (id: string) => request<JobDetail>(`/jobs/${id}`),
@@ -41,3 +55,5 @@ export const api = {
   simulatorLogs: (limit = 50, offset = 0) =>
     request<SimulatorLogs>(`/simulator/logs?limit=${limit}&offset=${offset}`),
 };
+
+export type { ProductCard };

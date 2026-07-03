@@ -85,12 +85,16 @@ def logq_corrected_loss(
     logits: torch.Tensor,
     item_popularity: torch.Tensor,
     temperature: float = 0.05,
+    sample_weights: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """In-batch negative sampling with logQ correction for popularity bias."""
     corrected = logits - torch.log(item_popularity.unsqueeze(0) + 1e-8)
     corrected = corrected / temperature
     labels = torch.arange(corrected.size(0), device=corrected.device)
-    return F.cross_entropy(corrected, labels)
+    loss = F.cross_entropy(corrected, labels, reduction="none")
+    if sample_weights is not None:
+        return (loss * sample_weights).mean()
+    return loss.mean()
 
 
 def compute_inbatch_logits(user_emb: torch.Tensor, item_emb: torch.Tensor) -> torch.Tensor:

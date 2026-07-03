@@ -8,6 +8,8 @@ user_features:
   - days_since_last_interaction
   - top_category_affinity
   - avg_price_interacted
+  - verified_purchase_rate
+  - avg_helpful_vote_authored
 
 item_features:
   - popularity_decay_7d
@@ -15,6 +17,11 @@ item_features:
   - price_bucket
   - category_id
   - content_embedding
+  - avg_rating
+  - log_rating_number
+  - link_degree
+  - avg_helpful_vote
+  - review_sentiment_proxy
 
 cold_start:
   default_interaction_count: 0

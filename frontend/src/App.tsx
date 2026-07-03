@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
+import RecommendShop from "./RecommendShop";
 import type {
   JobDetail,
   MetricsResponse,
-  RecommendResponse,
   SimulatorLogs,
   SystemStatus,
   UserInfo,
@@ -13,7 +13,7 @@ import "./App.css";
 type Tab = "overview" | "pipeline" | "recommend" | "metrics" | "simulator";
 
 const PIPELINE_STEPS = [
-  { task: "download", title: "Prepare Dataset", desc: "Download or generate synthetic Amazon Electronics data" },
+  { task: "download", title: "Download Dataset", desc: "Download Amazon Reviews 2023 (7 categories, image-backed catalog)" },
   { task: "features", title: "Build Features", desc: "Compute batch user and item feature tables" },
   { task: "measure_skew", title: "Measure Skew", desc: "Compare batch vs online feature distributions" },
   { task: "train_retrieval", title: "Train Retrieval", desc: "Two-tower model + FAISS ANN index" },
@@ -24,6 +24,22 @@ const PIPELINE_STEPS = [
 
 const FULL_PIPELINE = ["download", "features", "measure_skew", "train_retrieval", "train_ranker", "simulator", "evaluate"];
 
+function formatStatValue(value: unknown): string {
+  if (typeof value === "number") return value.toLocaleString();
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.join(", ");
+  if (value && typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([key, entry]) => `${key}: ${typeof entry === "number" ? entry.toLocaleString() : String(entry)}`)
+      .join(" · ");
+  }
+  return String(value ?? "—");
+}
+
+function isNestedStat(value: unknown): boolean {
+  return Array.isArray(value) || (value !== null && typeof value === "object");
+}
+
 export default function App() {
   const [tab, setTab] = useState<Tab>("overview");
   const [status, setStatus] = useState<SystemStatus | null>(null);
@@ -31,12 +47,11 @@ export default function App() {
   const [users, setUsers] = useState<UserInfo[]>([]);
   const [metrics, setMetrics] = useState<MetricsResponse | null>(null);
   const [logs, setLogs] = useState<SimulatorLogs | null>(null);
-  const [recommendation, setRecommendation] = useState<RecommendResponse | null>(null);
   const [selectedUser, setSelectedUser] = useState("");
-  const [synthetic, setSynthetic] = useState(true);
   const [loading, setLoading] = useState(false);
   const [runningTask, setRunningTask] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [usersError, setUsersError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -60,11 +75,25 @@ export default function App() {
     try {
       const u = await api.users(30);
       setUsers(u);
-      if (u.length && !selectedUser) setSelectedUser(u[0].user_id);
-    } catch {
+      setUsersError(null);
+      if (u.length) {
+        setSelectedUser((prev) => prev || u[0].user_id);
+      }
+    } catch (e) {
       setUsers([]);
+      const msg = e instanceof Error ? e.message : "Failed to load users";
+      const isConnection =
+        msg.includes("Failed to fetch") ||
+        msg.includes("NetworkError") ||
+        msg.includes("ECONNREFUSED") ||
+        msg.includes("Network request failed");
+      setUsersError(
+        isConnection
+          ? "Backend not reachable. Start API: python scripts/run_ui.py --reload (port 8000)"
+          : msg
+      );
     }
-  }, [selectedUser]);
+  }, []);
 
   useEffect(() => {
     refresh();
@@ -80,8 +109,11 @@ export default function App() {
     setRunningTask(task);
     setError(null);
     try {
-      await api.runJob(task, synthetic);
+      await api.runJob(task);
       await refresh();
+      if (task === "download") {
+        await loadUsers();
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Job failed");
     } finally {
@@ -95,7 +127,7 @@ export default function App() {
     try {
       for (const task of FULL_PIPELINE) {
         setRunningTask(task);
-        const { id } = await api.runJob(task, synthetic);
+        const { id } = await api.runJob(task);
         let done = false;
         while (!done) {
           await new Promise((r) => setTimeout(r, 1500));
@@ -116,22 +148,6 @@ export default function App() {
     }
   };
 
-  const handleRecommend = async () => {
-    if (!selectedUser) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await api.recommend(selectedUser);
-      setRecommendation(result);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Recommendation failed");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const budgetMs = { retrieval: 20, prerank: 10, ranking: 50, reranking: 30, total: 100 };
-
   return (
     <div className="app">
       <header className="header">
@@ -147,7 +163,7 @@ export default function App() {
       <nav className="tabs">
         {(["overview", "pipeline", "recommend", "metrics", "simulator"] as Tab[]).map((t) => (
           <button key={t} className={`tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
-            {t.charAt(0).toUpperCase() + t.slice(1)}
+            {t === "recommend" ? "Shop" : t.charAt(0).toUpperCase() + t.slice(1)}
           </button>
         ))}
       </nav>
@@ -161,9 +177,18 @@ export default function App() {
             {status?.dataset ? (
               <div className="stat-grid">
                 {Object.entries(status.dataset).map(([k, v]) => (
-                  <div key={k} className="stat">
+                  <div
+                    key={k}
+                    className="stat"
+                    style={isNestedStat(v) ? { gridColumn: "1 / -1" } : undefined}
+                  >
                     <div className="label">{k.replace(/_/g, " ")}</div>
-                    <div className="value">{typeof v === "number" ? v.toLocaleString() : v}</div>
+                    <div
+                      className="value"
+                      style={isNestedStat(v) ? { fontSize: "0.85rem", lineHeight: 1.5 } : undefined}
+                    >
+                      {formatStatValue(v)}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -192,10 +217,10 @@ export default function App() {
           <div className="card" style={{ gridColumn: "1 / -1" }}>
             <h2>Quick Start</h2>
             <p style={{ color: "var(--text-muted)", marginBottom: 16, fontSize: "0.9rem" }}>
-              Run the full pipeline with synthetic data, then test recommendations.
+              Download real Amazon data and run the full pipeline, then test recommendations in the Shop tab.
             </p>
             <button className="btn btn-primary btn-run-all" onClick={runFullPipeline} disabled={loading}>
-              {loading ? `Running: ${runningTask}...` : "Run Full Pipeline (Synthetic)"}
+              {loading ? `Running: ${runningTask}...` : "Run Full Pipeline"}
             </button>
           </div>
         </div>
@@ -205,10 +230,6 @@ export default function App() {
         <div className="grid grid-2">
           <div className="card">
             <h2>Pipeline Steps</h2>
-            <label className="toggle">
-              <input type="checkbox" checked={synthetic} onChange={(e) => setSynthetic(e.target.checked)} />
-              Use synthetic data (fast local dev)
-            </label>
             <div className="pipeline-grid">
               {PIPELINE_STEPS.map((step) => (
                 <div key={step.task} className="pipeline-step">
@@ -256,86 +277,14 @@ export default function App() {
       )}
 
       {tab === "recommend" && (
-        <div className="grid grid-2">
-          <div className="card" style={{ gridColumn: "1 / -1" }}>
-            <h2>Live Recommendation</h2>
-            <div className="recommend-form">
-              <select className="select" value={selectedUser} onChange={(e) => setSelectedUser(e.target.value)}>
-                <option value="">Select user...</option>
-                {users.map((u) => (
-                  <option key={u.user_id} value={u.user_id}>
-                    {u.user_id} ({u.interaction_count} interactions)
-                  </option>
-                ))}
-              </select>
-              <button className="btn btn-primary" onClick={handleRecommend} disabled={!selectedUser || loading}>
-                {loading ? "Generating..." : "Get Recommendations"}
-              </button>
-              <button className="btn btn-secondary" onClick={loadUsers}>
-                Refresh Users
-              </button>
-            </div>
-
-            {recommendation && (
-              <>
-                {recommendation.user_history.length > 0 && (
-                  <div>
-                    <h3>Recent History</h3>
-                    <div className="history-chips">
-                      {recommendation.user_history.map((id) => (
-                        <span key={id} className="chip">{id}</span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                <h3 style={{ marginTop: 24 }}>Recommended Slate</h3>
-                <div className="slate-grid">
-                  {recommendation.slate.map((item) => (
-                    <div key={item.item_id} className="slate-item">
-                      <div className="rank">#{item.position + 1}</div>
-                      <div>
-                        <div className="title">{item.title}</div>
-                        <div className="meta">
-                          {item.category} · {item.item_id}
-                          {item.price != null && ` · $${item.price.toFixed(2)}`}
-                        </div>
-                      </div>
-                      <div className="score">{item.score.toFixed(3)}</div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-
-          {recommendation && (
-            <div className="card">
-              <h2>Latency Profile</h2>
-              <div className="latency-bars">
-                {(["retrieval", "prerank", "ranking", "reranking", "total"] as const).map((stage) => {
-                  const ms = recommendation.latency[`${stage}_ms` as keyof typeof recommendation.latency] as number;
-                  const budget = budgetMs[stage];
-                  const pct = Math.min((ms / budget) * 100, 100);
-                  const ok = recommendation.latency.within_budget[stage];
-                  return (
-                    <div key={stage} className="latency-row">
-                      <span>{stage}</span>
-                      <div className="latency-bar">
-                        <div className={`fill ${ok ? "" : "over"}`} style={{ width: `${pct}%` }} />
-                      </div>
-                      <span className="mono">{ms.toFixed(1)}ms</span>
-                      <span>{ok ? "✓" : "✗"}</span>
-                    </div>
-                  );
-                })}
-              </div>
-              <p style={{ marginTop: 12, fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                Budget: 100ms total (20 + 10 + 50 + 30)
-              </p>
-            </div>
-          )}
-        </div>
+        <RecommendShop
+          status={status}
+          users={users}
+          usersError={usersError}
+          selectedUser={selectedUser}
+          onUserChange={setSelectedUser}
+          onRefreshUsers={loadUsers}
+        />
       )}
 
       {tab === "metrics" && (
@@ -363,7 +312,13 @@ export default function App() {
                 {Object.entries(metrics.simulator_summary).map(([k, v]) => (
                   <div key={k} className="stat">
                     <div className="label">{k.replace(/_/g, " ")}</div>
-                    <div className="value">{typeof v === "number" && v < 1 ? v.toFixed(4) : v}</div>
+                    <div className="value">
+                      {typeof v === "number"
+                        ? v < 1 && v > 0
+                          ? v.toFixed(4)
+                          : v.toLocaleString()
+                        : formatStatValue(v)}
+                    </div>
                   </div>
                 ))}
               </div>

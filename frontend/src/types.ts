@@ -1,3 +1,23 @@
+export interface ProductCard {
+  item_id: string;
+  title: string;
+  category: string;
+  price: number | null;
+  description?: string;
+  image_url: string;
+}
+
+export interface CatalogResponse {
+  products: ProductCard[];
+  categories: string[];
+  total: number;
+}
+
+export interface UserHistoryResponse {
+  user_id: string;
+  products: ProductCard[];
+}
+
 export interface ArtifactStatus {
   name: string;
   exists: boolean;
@@ -8,7 +28,7 @@ export interface ArtifactStatus {
 export interface SystemStatus {
   ready: boolean;
   artifacts: ArtifactStatus[];
-  dataset: Record<string, number> | null;
+  dataset: Record<string, unknown> | null;
 }
 
 export interface JobDetail {
@@ -27,6 +47,7 @@ export interface SlateItem {
   price: number | null;
   score: number;
   position: number;
+  image_url: string;
 }
 
 export interface RecommendResponse {
@@ -41,6 +62,7 @@ export interface RecommendResponse {
     within_budget: Record<string, boolean>;
   };
   user_history: string[];
+  context_item_id?: string | null;
 }
 
 export interface UserInfo {
